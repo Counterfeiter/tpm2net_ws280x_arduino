@@ -13,11 +13,16 @@
 //define some tpm constants
 #define TPM2NET_LISTENING_PORT 65506
 
-// set down if arduino with lesser UDP_PACKET_SIZE * 2 bytes of RAM is used
-#define UDP_PACKET_SIZE 1600
+// set down if arduino with lesser UDP_PACKET_SIZE + PIXEL_DATA bytes of RAM is used
+// keep track of your arduino board ram !!!
+#define UDP_PACKET_SIZE   1600
+#define PIXEL_DATA        (2048*3) /// 2048 PIXEL!
 
 // buffers for receiving and sending data
-uint8_t packetBuffer[UDP_PACKET_SIZE]; //buffer to hold incoming packet,
+// buffer to hold incoming LED Data... should be able to hold all the pixel data
+// example 288 LEDs -> 288 * 3 = 864 byte minimum!
+// keep track of your arduino board ram !!!
+uint8_t packetBuffer[UDP_PACKET_SIZE]; 
 
 byte mac[] = { 
   0xBE, 0x00, 0xBE, 0x00, 0xBE, 0x01 };
@@ -41,11 +46,12 @@ void setup() {
   Udp.begin(TPM2NET_LISTENING_PORT);
 
   //setup (Tiva) SPI
-  SPI.setModule(1);
-  SPI.begin();
+  SPI.setModule(0); // SPI0/SSI0 -> PA2 = Clock, PA4 = Data
   SPI.setBitOrder(MSBFIRST);
   SPI.setDataMode(SPI_MODE0);
-  SPI.setClockDivider(SPI_CLOCK_DIV32);
+  //tiva Launchpad runs SPI with 2 MHz Clock! -> SPI_CLOCK_DIV64
+  SPI.setClockDivider(SPI_CLOCK_DIV64);
+  SPI.begin();
 
   pinMode(LED, OUTPUT); 
 
@@ -119,12 +125,20 @@ void printIPAddress()
 
 
 //////////////////// TPM2.net Handling /////////////////////////////////////////////
-enum tpm2_net_states {
-  IDLE, STARTB, STARTB2,STARTB3,STARTB4,STARTB5,STARTB6,ENDB};			//tpm2 states
+enum tpm2_net_states { //tpm2 states
+  IDLE, 
+  STARTB, 
+  STARTB2,
+  STARTB3,
+  STARTB4,
+  STARTB5,
+  STARTB6,
+  ENDB
+};			
 
 tpm2_net_states tpm2state = IDLE; //state maschine for protocol recv'ing
 
-//SPI PORT to handle tpm2 protocol to ...
+//variables used for counting packeges and bytes recv'ed
 static uint16_t SpiCount = 0;
 static uint16_t Framesize = 0;
 static uint16_t data_counter = 0;
@@ -142,17 +156,21 @@ static uint8_t send_data_to_spi = false;
 
 #define TPM2_BLOCK_COMMAND			0xC0
 
-uint8_t tx_buffer_1[UDP_PACKET_SIZE];
+uint8_t tx_buffer_1[PIXEL_DATA];
 
 void tpm2_net_to_ws2801(uint8_t  *buf,uint16_t len)
 {
   for(uint16_t i = 0;i<len;i++) {
     if(tpm2state == STARTB6) {
       if(data_counter < Framesize) {
-        tx_buffer_1[SpiCount]=buf[i];
-        SpiCount++;
-        data_counter++;
-        continue;
+        if(SpiCount < PIXEL_DATA) {
+          tx_buffer_1[SpiCount]=buf[i];
+          SpiCount++;
+          data_counter++;
+          continue;
+        } else {
+          tpm2_reset_statemaschine();
+        }
       }
       else
       {
@@ -163,7 +181,6 @@ void tpm2_net_to_ws2801(uint8_t  *buf,uint16_t len)
     //check end byte
     if(tpm2state == ENDB) {
       if(buf[i] == TPM2_BLOCK_END) {
-
         //send data to spi port
         if(send_data_to_spi) {
           //send frames here
@@ -178,13 +195,7 @@ void tpm2_net_to_ws2801(uint8_t  *buf,uint16_t len)
         } 
         else {
           packet_counter++;
-
-
         }
-
-
-
-
       }
 
       tpm2state = IDLE;
@@ -212,7 +223,7 @@ void tpm2_net_to_ws2801(uint8_t  *buf,uint16_t len)
     {
       Framesize |= (uint16_t)buf[i];
       data_counter = 0;
-      if(Framesize <= UDP_PACKET_SIZE) {
+      if(Framesize <= PIXEL_DATA) {
         tpm2state = STARTB4;
       } 
       else tpm2state = IDLE;
